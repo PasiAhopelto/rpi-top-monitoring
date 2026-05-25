@@ -28,14 +28,13 @@ pub fn getMetrics(allocator: std.mem.Allocator, io: std.Io) !SystemMetrics {
 
     const cpu_temp = try readCpuTemp(io);
     const cpu_freq = try readCpuFreq(io);
-    const cpu_gov = try readCpuGovernor(io);
     const cpu_load = try readCpuLoad(io);
 
     const gpu_temp = try readGpuTemp(allocator, io);
     const gpu_freq = try readGpuFreq(allocator, io);
 
-    var gov_buf: [32]u8 = [_]u8{0} ** 32;
-    @memcpy(gov_buf[0..cpu_gov.len], cpu_gov);
+    var gov_buf = [_]u8{0} ** 32;
+    readCpuGovernor(io, &gov_buf);
 
     return SystemMetrics{
         .cpu = .{
@@ -79,16 +78,24 @@ fn readCpuFreq(io: std.Io) !f32 {
     return @as(f32, @floatFromInt(freq_khz)) / 1000.0;
 }
 
-fn readCpuGovernor(io: std.Io) ![]const u8 {
+fn readCpuGovernor(io: std.Io, out_buf: *[32]u8) void {
     const path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor";
-    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return "unknown";
+    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch {
+        @memcpy(out_buf[0.."unknown".len], "unknown");
+        return;
+    };
     defer file.close(io);
 
     var buf: [64]u8 = undefined;
     var reader = file.reader(io, &buf);
-    const bytes_read = try reader.interface.readSliceShort(&buf);
+    const bytes_read = reader.interface.readSliceShort(&buf) catch {
+        @memcpy(out_buf[0.."unknown".len], "unknown");
+        return;
+    };
     
-    return std.mem.trim(u8, buf[0..bytes_read], " \n\r");
+    const trimmed = std.mem.trim(u8, buf[0..bytes_read], " \n\r\t\x00");
+    const len = @min(trimmed.len, 31);
+    @memcpy(out_buf[0..len], trimmed[0..len]);
 }
 
 fn readCpuLoad(io: std.Io) !f32 {

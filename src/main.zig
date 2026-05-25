@@ -12,6 +12,22 @@ pub fn main(init: std.process.Init) !void {
         refresh_interval_s = std.fmt.parseInt(u64, args[1], 10) catch 10;
     }
 
+    // Fetch timezone offset in seconds once at startup
+    var tz_offset_seconds: i64 = 0;
+    if (std.process.run(init.arena.allocator(), io, .{
+        .argv = &[_][]const u8{ "date", "+%z" },
+    })) |result| {
+        defer init.arena.allocator().free(result.stdout);
+        defer init.arena.allocator().free(result.stderr);
+        const trimmed = std.mem.trim(u8, result.stdout, " \n\r\t");
+        if (trimmed.len >= 5) {
+            const sign: i64 = if (trimmed[0] == '-') -1 else 1;
+            const hours = std.fmt.parseInt(i64, trimmed[1..3], 10) catch 0;
+            const minutes = std.fmt.parseInt(i64, trimmed[3..5], 10) catch 0;
+            tz_offset_seconds = sign * (hours * 3600 + minutes * 60);
+        }
+    } else |_| {}
+
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
     const stdout = &stdout_file_writer.interface;
@@ -33,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
         const now_s = @divTrunc(timestamp.toNanoseconds(), std.time.ns_per_s);
 
         try history.insert(allocator, 0, .{
-            .timestamp = @intCast(now_s),
+            .timestamp = @intCast(now_s + tz_offset_seconds),
             .metrics = sys_metrics,
         });
 
@@ -43,6 +59,7 @@ pub fn main(init: std.process.Init) !void {
 
         try stdout.writeAll("\x1b[H\x1b[2J");
 
+        // Render header with title and refresh interval
         try stdout.writeAll("\x1b[1;36mRPi Top Monitor (v0.1.0)\x1b[0m | ");
         try stdout.print("Refresh: {d}s | Press Ctrl+C to exit\n", .{refresh_interval_s});
         try stdout.writeAll("--------------------------------------------------------------------------------\n");
@@ -80,10 +97,10 @@ const HistoricalEntry = struct {
 
 fn formatTimestamp(ts: i64, buf: []u8) ![]const u8 {
     const seconds_in_day = @as(i64, 86400);
-    const day_seconds = @rem(ts, seconds_in_day);
-    const hours = @divTrunc(day_seconds, 3600);
-    const minutes = @divTrunc(@rem(day_seconds, 3600), 60);
-    const seconds = @rem(day_seconds, 60);
+    const day_seconds = @mod(ts, seconds_in_day);
+    const hours: u32 = @intCast(@divTrunc(day_seconds, 3600));
+    const minutes: u32 = @intCast(@divTrunc(@rem(day_seconds, 3600), 60));
+    const seconds: u32 = @intCast(@rem(day_seconds, 60));
 
     return std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}:{d:0>2}", .{ hours, minutes, seconds });
 }
